@@ -1,4 +1,4 @@
-# Signal Processing and Machine Learning Pipeline
+# Signal Processing and Fault Analysis using Supervised Contrastive Leaerning
 
 ## Overview
 This project implements an end-to-end pipeline for processing and analyzing signal data from Simulink models. It converts .mat files to CSV format, extracts various statistical features, performs signal processing transformations, and applies machine learning models for prediction using Supervised Contrastive Loss and Support Vector Machine (SVM).
