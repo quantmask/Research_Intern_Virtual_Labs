@@ -1,4 +1,4 @@
-# Signal Processing and Fault Analysis using Supervised Contrastive Leaerning
+# Signal Processing and Fault Analysis using Supervised Contrastive Learning
 
 ## Overview
 This project implements an end-to-end pipeline for processing and analyzing signal data from Simulink models. It converts .mat files to CSV format, extracts various statistical features, performs signal processing transformations, and applies machine learning models for prediction using Supervised Contrastive Loss and Support Vector Machine (SVM).
@@ -122,5 +122,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [Credit any external libraries or resources used]
 
 ## Contact
-Your Name - [quantmask@github.com]
-Project Link: [https://github.com/quantmask/Research_Intern_Virtual_Labs]
+- Name:  [quantmask@github.com]
+- Project Link: [https://github.com/quantmask/Research_Intern_Virtual_Labs]
