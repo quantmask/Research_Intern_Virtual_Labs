@@ -7,15 +7,17 @@ from scipy.fft import fft
 import streamlit as st
 import pywt
 import plotly.graph_objects as go
+import plotly.express as px
 import matplotlib.colors as mcolors
 import tensorflow as tf
 from tensorflow.keras.losses import CategoricalCrossentropy, BinaryCrossentropy
 from tensorflow.keras import layers, models
 from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
-from sklearn.metrics import classification_report, accuracy_score
+from sklearn.metrics import classification_report, accuracy_score, roc_curve, auc, confusion_matrix
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.preprocessing import Binarizer
+from sklearn.manifold import TSNE
 
 # Define output folder for CSV files
 output_folder = "dataset_csv"
@@ -565,8 +567,79 @@ if st.button("Calculate Wavelet Transform"):
 
             except Exception as e:
                 st.error(f"Error processing file {csv_file}: {e}")
+def create_roc_curve(y_true, y_pred_proba):
+    """Create ROC curve using Plotly"""
+    fpr, tpr, _ = roc_curve(y_true, y_pred_proba)
+    roc_auc = auc(fpr, tpr)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=fpr, y=tpr,
+        mode='lines',
+        name=f'ROC curve (AUC = {roc_auc:.2f})',
+        line=dict(color='royalblue', width=2)
+    ))
+    fig.add_trace(go.Scatter(
+        x=[0, 1], y=[0, 1],
+        mode='lines',
+        name='Random',
+        line=dict(color='red', dash='dash')
+    ))
+    
+    fig.update_layout(
+        title='Receiver Operating Characteristic (ROC) Curve',
+        xaxis_title='False Positive Rate',
+        yaxis_title='True Positive Rate',
+        showlegend=True,
+        width=700,
+        height=500
+    )
+    return fig
 
+def create_confusion_matrix(y_true, y_pred):
+    """Create confusion matrix using Plotly"""
+    cm = confusion_matrix(y_true, y_pred)
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=cm,
+        x=['Predicted 0', 'Predicted 1'],
+        y=['Actual 0', 'Actual 1'],
+        colorscale='Blues',
+        text=cm,
+        texttemplate="%{text}",
+        textfont={"size": 16},
+        hoverongaps=False
+    ))
+    
+    fig.update_layout(
+        title='Confusion Matrix',
+        width=600,
+        height=500
+    )
+    return fig
 
+def create_tsne_plot(features, labels):
+    """Create t-SNE visualization using Plotly"""
+    tsne = TSNE(n_components=2, random_state=42)
+    features_2d = tsne.fit_transform(features)
+    
+    df = pd.DataFrame({
+        'x': features_2d[:, 0],
+        'y': features_2d[:, 1],
+        'Label': labels
+    })
+    
+    fig = px.scatter(
+        df, x='x', y='y',
+        color='Label',
+        title='t-SNE Visualization of Features',
+        labels={'color': 'Class'},
+        width=700,
+        height=500
+    )
+    
+    fig.update_traces(marker=dict(size=8))
+    return fig
 
 # Define activation-loss pairs
 ACTIVATION_LOSS_PAIRS = {
@@ -586,14 +659,12 @@ ACTIVATION_LOSS_PAIRS = {
 st.sidebar.subheader("File Selection for SCL for feature and SVM for classification")
 csv_files = [f for f in os.listdir("dataset_csv") if f.endswith('.csv')]
 
-# Add a key to the "Select All" checkbox
 select_all_csv = st.sidebar.checkbox(
     "Select All CSV Files for Processing", 
     value=False, 
     key="select_all_csv_checkbox"
 )
 
-# Add a key to the multiselect
 selected_csv_files = st.sidebar.multiselect(
     "Select CSV Files for Training",
     options=csv_files,
@@ -601,7 +672,6 @@ selected_csv_files = st.sidebar.multiselect(
     key="csv_file_multiselect"
 )
 
-# Automatically select all CSV files if "Select All" is checked
 if select_all_csv:
     selected_csv_files = csv_files
 
@@ -639,7 +709,6 @@ st.write(f"### Selected CSV Files: {', '.join(selected_csv_files) if selected_cs
 # Enhanced Display Section
 st.write("## Model Configuration")
 
-# Create two columns for parameter display
 col1, col2 = st.columns(2)
 
 with col1:
@@ -671,7 +740,6 @@ with col2:
     })
     st.table(params_df)
 
-# Add a divider
 st.markdown("---")
 
 # Data Processing Section
@@ -682,7 +750,6 @@ if selected_csv_files:
         data = pd.read_csv(data_path, header=None)
         data_points.extend(data.values.flatten())
     
-    # Create features and labels using sliding window
     X = []
     y = []
     for i in range(len(data_points) - window_size):
@@ -692,12 +759,10 @@ if selected_csv_files:
     X = np.array(X)
     y = np.array(y)
     
-    # Process labels based on activation function
     binarizer = Binarizer(threshold=np.median(y))
     y = binarizer.fit_transform(y.reshape(-1, 1)).flatten()
     y = y.astype(int)
     
-    # Handle label preprocessing based on activation
     if ACTIVATION_LOSS_PAIRS[activation_function]["preprocessing"] == "one-hot":
         if len(np.unique(y)) != num_classes:
             st.error(f"Data contains {len(np.unique(y))} classes but {num_classes} were specified!")
@@ -708,11 +773,9 @@ if selected_csv_files:
             st.error("Data must have exactly 2 classes for binary classification!")
             st.stop()
     
-    # Split Data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     input_shape = X_train.shape[1:]
 
-    # Show data statistics
     with st.expander("Show Data Statistics", expanded=False):
         col3, col4 = st.columns(2)
         
@@ -726,7 +789,6 @@ if selected_csv_files:
             st.metric(label="Testing Samples", value=f"{len(X_test):,}")
             st.metric(label="Input Shape", value=f"{input_shape}")
 
-    # Model Building
     def create_model(input_shape, num_classes, activation_function):
         inputs = layers.Input(shape=input_shape)
         x = layers.Dense(256, activation='relu')(inputs)
@@ -756,11 +818,9 @@ if selected_csv_files:
     )
 
     if st.sidebar.button("Train Model"):
-        # Progress bar and status
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # Callbacks
         early_stopping = EarlyStopping(
             monitor='val_loss',
             patience=10,
@@ -772,7 +832,6 @@ if selected_csv_files:
             monitor='val_loss'
         )
         
-        # Class weights
         class_weights = None
         if activation_function == "sigmoid":
             unique, counts = np.unique(y_train, return_counts=True)
@@ -780,7 +839,6 @@ if selected_csv_files:
         elif activation_function == "softmax":
             class_weights = dict(enumerate([1.0] * num_classes))
         
-        # Model Training
         history = model.fit(
             X_train, y_train,
             epochs=epochs,
@@ -791,7 +849,6 @@ if selected_csv_files:
             verbose=0
         )
         
-        # Feature Extraction for SVM
         feature_extractor = models.Model(
             inputs=model.input,
             outputs=model.layers[-2].output
@@ -799,14 +856,12 @@ if selected_csv_files:
         X_train_features = feature_extractor.predict(X_train, verbose=0)
         X_test_features = feature_extractor.predict(X_test, verbose=0)
 
-        # Train SVM
-        svm_classifier = SVC(kernel='rbf', gamma='scale')
+        svm_classifier = SVC(kernel='rbf', gamma='scale', probability=True)
         if activation_function == "softmax":
             svm_classifier.fit(X_train_features, y_train.argmax(axis=1))
         else:
             svm_classifier.fit(X_train_features, y_train)
 
-        # Evaluation
         y_pred = svm_classifier.predict(X_test_features)
         if activation_function == "softmax":
             y_true = y_test.argmax(axis=1)
@@ -816,13 +871,48 @@ if selected_csv_files:
         accuracy = accuracy_score(y_true, y_pred)
         report = classification_report(y_true, y_pred, output_dict=True)
         
-        # Display results
         st.success(f"### Model Training Completed!")
         st.write(f"### Accuracy: {accuracy:.4f}")
         st.write("### Classification Report:")
         st.table(pd.DataFrame(report).transpose())
         
-        # Plot training history
+        # Performance Metrics Visualization
+        st.write("### Performance Metrics")
+        
+        metric_tabs = st.tabs(["ROC Curve", "Confusion Matrix", "t-SNE Visualization"])
+        
+        with metric_tabs[0]:
+            y_pred_proba = svm_classifier.predict_proba(X_test_features)[:, 1]
+            roc_fig = create_roc_curve(y_true, y_pred_proba)
+            st.plotly_chart(roc_fig)
+        
+        with metric_tabs[1]:
+            conf_matrix_fig = create_confusion_matrix(y_true, y_pred)
+            st.plotly_chart(conf_matrix_fig)
+        
+        with metric_tabs[2]:
+            tsne_fig = create_tsne_plot(X_test_features, y_true)
+            st.plotly_chart(tsne_fig)
+        
         st.write("### Training History")
         history_df = pd.DataFrame(history.history)
-        st.line_chart(history_df)
+        
+        fig_history = go.Figure()
+        fig_history.add_trace(go.Scatter(
+            y=history_df['loss'],
+            name='Training Loss',
+            line=dict(color='blue')
+        ))
+        fig_history.add_trace(go.Scatter(
+            y=history_df['val_loss'],
+            name='Validation Loss',
+            line=dict(color='red')
+        ))
+        fig_history.update_layout(
+            title='Training and Validation Loss',
+            xaxis_title='Epoch',
+            yaxis_title='Loss',
+            width=700,
+            height=400
+        )
+        st.plotly_chart(fig_history)
