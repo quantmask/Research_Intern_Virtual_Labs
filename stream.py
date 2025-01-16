@@ -566,6 +566,22 @@ if st.button("Calculate Wavelet Transform"):
             except Exception as e:
                 st.error(f"Error processing file {csv_file}: {e}")
 
+
+
+# Define activation-loss pairs
+ACTIVATION_LOSS_PAIRS = {
+    "softmax": {
+        "loss": CategoricalCrossentropy(),
+        "description": "Multi-class classification",
+        "preprocessing": "one-hot"
+    },
+    "sigmoid": {
+        "loss": BinaryCrossentropy(),
+        "description": "Binary classification",
+        "preprocessing": "binary"
+    }
+}
+
 # Sidebar options for file selection
 st.sidebar.subheader("File Selection for SCL for feature and SVM for classification")
 csv_files = [f for f in os.listdir("dataset_csv") if f.endswith('.csv')]
@@ -589,21 +605,36 @@ selected_csv_files = st.sidebar.multiselect(
 if select_all_csv:
     selected_csv_files = csv_files
 
-# Display the selected files
-st.write(f"### Selected CSV Files: {', '.join(selected_csv_files) if selected_csv_files else 'None'}")
+# Model Configuration in Sidebar
+activation_function = st.sidebar.selectbox(
+    "Select Activation Function",
+    options=list(ACTIVATION_LOSS_PAIRS.keys()),
+    index=0
+)
 
-# Direct Input Fields for Epochs, Batch Size, Window Size
+st.sidebar.info(ACTIVATION_LOSS_PAIRS[activation_function]["description"])
+
+# Direct Input Fields
 epochs = st.sidebar.text_input("Enter number of epochs", value="50")
 batch_size = st.sidebar.text_input("Enter batch size", value="32")
 window_size = st.sidebar.text_input("Enter window size (number of points per window)", value="1024")
 
-# Convert input values to appropriate types
+if activation_function == "softmax":
+    num_classes = st.sidebar.text_input("Enter number of classes", value="2")
+else:
+    num_classes = "2"  # Fixed for sigmoid
+
+# Convert input values
 try:
     epochs = int(epochs)
     batch_size = int(batch_size)
     window_size = int(window_size)
+    num_classes = int(num_classes)
 except ValueError:
-    st.error("Please enter valid integer values for epochs, batch size, and window size.")
+    st.error("Please enter valid integer values.")
+
+# Display the selected files
+st.write(f"### Selected CSV Files: {', '.join(selected_csv_files) if selected_csv_files else 'None'}")
 
 # Enhanced Display Section
 st.write("## Model Configuration")
@@ -631,7 +662,12 @@ with col2:
     st.info("### Model Parameters")
     params_df = pd.DataFrame({
         'Parameter': ['Activation Function', 'Loss Function', 'Epochs', 'Batch Size'],
-        'Value': ['Softmax', 'Categorical Crossentropy', epochs, batch_size]
+        'Value': [
+            activation_function,
+            ACTIVATION_LOSS_PAIRS[activation_function]["loss"].__class__.__name__,
+            epochs,
+            batch_size
+        ]
     })
     st.table(params_df)
 
@@ -642,12 +678,11 @@ st.markdown("---")
 if selected_csv_files:
     data_points = []
     for file in selected_csv_files:
-        # Load the selected CSV file
         data_path = os.path.join("dataset_csv", file)
         data = pd.read_csv(data_path, header=None)
         data_points.extend(data.values.flatten())
     
-    # Create features and labels using sliding window approach
+    # Create features and labels using sliding window
     X = []
     y = []
     for i in range(len(data_points) - window_size):
@@ -657,18 +692,25 @@ if selected_csv_files:
     X = np.array(X)
     y = np.array(y)
     
-    # Binarize the labels
+    # Process labels based on activation function
     binarizer = Binarizer(threshold=np.median(y))
     y = binarizer.fit_transform(y.reshape(-1, 1)).flatten()
     y = y.astype(int)
     
-    # Convert labels to one-hot encoding
-    y = np.eye(np.max(y) + 1)[y]
+    # Handle label preprocessing based on activation
+    if ACTIVATION_LOSS_PAIRS[activation_function]["preprocessing"] == "one-hot":
+        if len(np.unique(y)) != num_classes:
+            st.error(f"Data contains {len(np.unique(y))} classes but {num_classes} were specified!")
+            st.stop()
+        y = np.eye(num_classes)[y]
+    else:  # binary
+        if len(np.unique(y)) != 2:
+            st.error("Data must have exactly 2 classes for binary classification!")
+            st.stop()
     
     # Split Data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     input_shape = X_train.shape[1:]
-    num_classes = y_train.shape[1]
 
     # Show data statistics
     with st.expander("Show Data Statistics", expanded=False):
@@ -685,7 +727,7 @@ if selected_csv_files:
             st.metric(label="Input Shape", value=f"{input_shape}")
 
     # Model Building
-    def create_model(input_shape, num_classes):
+    def create_model(input_shape, num_classes, activation_function):
         inputs = layers.Input(shape=input_shape)
         x = layers.Dense(256, activation='relu')(inputs)
         x = layers.BatchNormalization()(x)
@@ -698,15 +740,23 @@ if selected_csv_files:
         x = layers.Dropout(0.5)(x)
         x = layers.Dense(32, activation='relu')(x)
         x = layers.BatchNormalization()(x)
-        outputs = layers.Dense(num_classes, activation='softmax')(x)
-        model = models.Model(inputs, outputs)
-        return model
+        
+        if activation_function == "softmax":
+            outputs = layers.Dense(num_classes, activation='softmax')(x)
+        else:
+            outputs = layers.Dense(1, activation='sigmoid')(x)
+            
+        return models.Model(inputs, outputs)
 
-    model = create_model(input_shape, num_classes)
-    model.compile(optimizer='adam', loss=CategoricalCrossentropy(), metrics=['accuracy'])
+    model = create_model(input_shape, num_classes, activation_function)
+    model.compile(
+        optimizer='adam',
+        loss=ACTIVATION_LOSS_PAIRS[activation_function]["loss"],
+        metrics=['accuracy']
+    )
 
     if st.sidebar.button("Train Model"):
-        # Progress bar
+        # Progress bar and status
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -723,7 +773,12 @@ if selected_csv_files:
         )
         
         # Class weights
-        class_weights = {0: 1, 1: 2}  # Adjust based on class imbalance
+        class_weights = None
+        if activation_function == "sigmoid":
+            unique, counts = np.unique(y_train, return_counts=True)
+            class_weights = dict(zip(unique, len(y_train) / (len(unique) * counts)))
+        elif activation_function == "softmax":
+            class_weights = dict(enumerate([1.0] * num_classes))
         
         # Model Training
         history = model.fit(
@@ -736,7 +791,7 @@ if selected_csv_files:
             verbose=0
         )
         
-        # Feature Extraction
+        # Feature Extraction for SVM
         feature_extractor = models.Model(
             inputs=model.input,
             outputs=model.layers[-2].output
@@ -746,16 +801,20 @@ if selected_csv_files:
 
         # Train SVM
         svm_classifier = SVC(kernel='rbf', gamma='scale')
-        svm_classifier.fit(X_train_features, y_train.argmax(axis=1))
+        if activation_function == "softmax":
+            svm_classifier.fit(X_train_features, y_train.argmax(axis=1))
+        else:
+            svm_classifier.fit(X_train_features, y_train)
 
         # Evaluation
         y_pred = svm_classifier.predict(X_test_features)
-        accuracy = accuracy_score(y_test.argmax(axis=1), y_pred)
-        report = classification_report(
-            y_test.argmax(axis=1),
-            y_pred,
-            output_dict=True
-        )
+        if activation_function == "softmax":
+            y_true = y_test.argmax(axis=1)
+        else:
+            y_true = y_test
+            
+        accuracy = accuracy_score(y_true, y_pred)
+        report = classification_report(y_true, y_pred, output_dict=True)
         
         # Display results
         st.success(f"### Model Training Completed!")
