@@ -9,12 +9,12 @@ import pywt
 import plotly.graph_objects as go
 import matplotlib.colors as mcolors
 import tensorflow as tf
-from tensorflow.keras.losses import Loss
+from tensorflow.keras.losses import CategoricalCrossentropy, BinaryCrossentropy
 from tensorflow.keras import layers, models
 from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
 from sklearn.metrics import classification_report, accuracy_score
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.preprocessing import Binarizer
 
 # Define output folder for CSV files
@@ -565,15 +565,89 @@ if st.button("Calculate Wavelet Transform"):
 
             except Exception as e:
                 st.error(f"Error processing file {csv_file}: {e}")
-                
-# Machine Learning section
-# Function to load and preprocess the dataset
-def load_and_preprocess_data(file_paths, window_size=1024):
+
+# Sidebar options for file selection
+st.sidebar.subheader("File Selection for SCL for feature and SVM for classification")
+csv_files = [f for f in os.listdir("dataset_csv") if f.endswith('.csv')]
+
+# Add a key to the "Select All" checkbox
+select_all_csv = st.sidebar.checkbox(
+    "Select All CSV Files for Processing", 
+    value=False, 
+    key="select_all_csv_checkbox"
+)
+
+# Add a key to the multiselect
+selected_csv_files = st.sidebar.multiselect(
+    "Select CSV Files for Training",
+    options=csv_files,
+    disabled=select_all_csv,
+    key="csv_file_multiselect"
+)
+
+# Automatically select all CSV files if "Select All" is checked
+if select_all_csv:
+    selected_csv_files = csv_files
+
+# Display the selected files
+st.write(f"### Selected CSV Files: {', '.join(selected_csv_files) if selected_csv_files else 'None'}")
+
+# Direct Input Fields for Epochs, Batch Size, Window Size
+epochs = st.sidebar.text_input("Enter number of epochs", value="50")
+batch_size = st.sidebar.text_input("Enter batch size", value="32")
+window_size = st.sidebar.text_input("Enter window size (number of points per window)", value="1024")
+
+# Convert input values to appropriate types
+try:
+    epochs = int(epochs)
+    batch_size = int(batch_size)
+    window_size = int(window_size)
+except ValueError:
+    st.error("Please enter valid integer values for epochs, batch size, and window size.")
+
+# Enhanced Display Section
+st.write("## Model Configuration")
+
+# Create two columns for parameter display
+col1, col2 = st.columns(2)
+
+with col1:
+    st.info("### Data Parameters")
+    st.markdown("""
+    ##### Selected CSV Files:
+    ```
+    {}
+    ```
+    """.format('\n'.join(selected_csv_files) if selected_csv_files else 'None'))
+    
+    st.markdown(f"""
+    ##### Window Size:
+    ```
+    {window_size} points
+    ```
+    """)
+
+with col2:
+    st.info("### Model Parameters")
+    params_df = pd.DataFrame({
+        'Parameter': ['Activation Function', 'Loss Function', 'Epochs', 'Batch Size'],
+        'Value': ['Softmax', 'Categorical Crossentropy', epochs, batch_size]
+    })
+    st.table(params_df)
+
+# Add a divider
+st.markdown("---")
+
+# Data Processing Section
+if selected_csv_files:
     data_points = []
-    for file_path in file_paths:
-        data = pd.read_csv(file_path, header=None)
+    for file in selected_csv_files:
+        # Load the selected CSV file
+        data_path = os.path.join("dataset_csv", file)
+        data = pd.read_csv(data_path, header=None)
         data_points.extend(data.values.flatten())
     
+    # Create features and labels using sliding window approach
     X = []
     y = []
     for i in range(len(data_points) - window_size):
@@ -583,101 +657,113 @@ def load_and_preprocess_data(file_paths, window_size=1024):
     X = np.array(X)
     y = np.array(y)
     
+    # Binarize the labels
     binarizer = Binarizer(threshold=np.median(y))
     y = binarizer.fit_transform(y.reshape(-1, 1)).flatten()
+    y = y.astype(int)
     
-    return X, y
+    # Convert labels to one-hot encoding
+    y = np.eye(np.max(y) + 1)[y]
+    
+    # Split Data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    input_shape = X_train.shape[1:]
+    num_classes = y_train.shape[1]
 
-# Function to create the neural network model
-def create_model(input_shape, activation_function):
-    inputs = layers.Input(shape=input_shape)
-    x = layers.Dense(256, activation=activation_function)(inputs)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.5)(x)
-    x = layers.Dense(128, activation=activation_function)(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.5)(x)
-    x = layers.Dense(64, activation=activation_function)(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.5)(x)
-    x = layers.Dense(32, activation=activation_function)(x)
-    x = layers.BatchNormalization()(x)
-    outputs = layers.Lambda(lambda x: tf.math.l2_normalize(x, axis=1))(x)
-    model = models.Model(inputs, outputs)
-    return model
+    # Show data statistics
+    with st.expander("Show Data Statistics", expanded=False):
+        col3, col4 = st.columns(2)
+        
+        with col3:
+            st.metric(label="Total Data Points", value=f"{len(data_points):,}")
+            st.metric(label="Training Samples", value=f"{len(X_train):,}")
+            st.metric(label="Number of Classes", value=num_classes)
+        
+        with col4:
+            st.metric(label="Window Size", value=window_size)
+            st.metric(label="Testing Samples", value=f"{len(X_test):,}")
+            st.metric(label="Input Shape", value=f"{input_shape}")
 
-# Define the supervised contrastive loss
-class SupervisedContrastiveLoss(Loss):
-    def __init__(self, temperature=0.1, name=None):
-        super().__init__(name=name)
-        self.temperature = temperature
+    # Model Building
+    def create_model(input_shape, num_classes):
+        inputs = layers.Input(shape=input_shape)
+        x = layers.Dense(256, activation='relu')(inputs)
+        x = layers.BatchNormalization()(x)
+        x = layers.Dropout(0.5)(x)
+        x = layers.Dense(128, activation='relu')(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Dropout(0.5)(x)
+        x = layers.Dense(64, activation='relu')(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Dropout(0.5)(x)
+        x = layers.Dense(32, activation='relu')(x)
+        x = layers.BatchNormalization()(x)
+        outputs = layers.Dense(num_classes, activation='softmax')(x)
+        model = models.Model(inputs, outputs)
+        return model
 
-    def call(self, y_true, y_pred):
-        y_true = tf.cast(y_true, tf.int32)
-        y_true = tf.one_hot(y_true, depth=tf.shape(y_pred)[0])
-        logits = tf.linalg.matmul(y_pred, y_pred, transpose_b=True) / self.temperature
-        return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=y_true, logits=logits))
+    model = create_model(input_shape, num_classes)
+    model.compile(optimizer='adam', loss=CategoricalCrossentropy(), metrics=['accuracy'])
 
-# Streamlit application
-st.title("Feature Extraction and Classification using Supervised Contrastive Learning & SVM")
+    if st.sidebar.button("Train Model"):
+        # Progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Callbacks
+        early_stopping = EarlyStopping(
+            monitor='val_loss',
+            patience=10,
+            restore_best_weights=True
+        )
+        model_checkpoint = ModelCheckpoint(
+            'best_model.keras',
+            save_best_only=True,
+            monitor='val_loss'
+        )
+        
+        # Class weights
+        class_weights = {0: 1, 1: 2}  # Adjust based on class imbalance
+        
+        # Model Training
+        history = model.fit(
+            X_train, y_train,
+            epochs=epochs,
+            batch_size=batch_size,
+            validation_split=0.2,
+            class_weight=class_weights,
+            callbacks=[early_stopping, model_checkpoint],
+            verbose=0
+        )
+        
+        # Feature Extraction
+        feature_extractor = models.Model(
+            inputs=model.input,
+            outputs=model.layers[-2].output
+        )
+        X_train_features = feature_extractor.predict(X_train, verbose=0)
+        X_test_features = feature_extractor.predict(X_test, verbose=0)
 
-# Sidebar options for file selection
-st.sidebar.subheader("File Selection")
-csv_files = [f for f in os.listdir("dataset_csv") if f.endswith('.csv')]
-select_plot_all_csv = st.sidebar.checkbox("Select All CSV Files for Processing", value=False)
-plot_selected_csv_files = st.sidebar.multiselect("Select CSV Files to Process", options=csv_files, disabled=select_plot_all_csv)
+        # Train SVM
+        svm_classifier = SVC(kernel='rbf', gamma='scale')
+        svm_classifier.fit(X_train_features, y_train.argmax(axis=1))
 
-if select_plot_all_csv:
-    plot_selected_csv_files = csv_files  # Automatically select all files if "Select All" is checked
-
-# Sidebar options for activation function and epochs
-st.sidebar.subheader("Model Parameters")
-activation_function = st.sidebar.selectbox("Select Activation Function", ["relu", "elu", "softmax", "sigmoid", "prelu", "leaky_relu"])
-epochs = st.sidebar.text_input("Enter number of epochs", value="10")
-
-if st.button("Process Selected Data"):
-    if not plot_selected_csv_files:
-        st.warning("Please select at least one CSV file to process.")
-    else:
-        # Load and preprocess the selected files
-        file_paths = [os.path.join("dataset_csv", file) for file in plot_selected_csv_files]
-        X, y = load_and_preprocess_data(file_paths, window_size=1024)
-        
-        # Split the data into training and testing sets
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        
-        # Ensure the input shape is correct
-        input_shape = X_train.shape[1:]
-        st.write(f"Input shape: {input_shape}")
-        
-        # Create and compile the model
-        model = create_model(input_shape, activation_function)
-        model.compile(optimizer='adam', loss=SupervisedContrastiveLoss())
-        
-        # Use callbacks for early stopping, model checkpointing, and learning rate reduction
-        early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-        model_checkpoint = ModelCheckpoint('best_model.keras', save_best_only=True, monitor='val_loss')
-        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, min_lr=0.0001)
-        
-        # Train the model with user-defined epochs and callbacks
-        model.fit(X_train, y_train, epochs=int(epochs), batch_size=16, validation_split=0.2, callbacks=[early_stopping, model_checkpoint, reduce_lr])
-        
-        # Extract features from the trained model
-        feature_extractor = models.Model(inputs=model.input, outputs=model.layers[-2].output)
-        X_train_features = feature_extractor.predict(X_train)
-        X_test_features = feature_extractor.predict(X_test)
-        
-        # Train an SVM classifier on the extracted features
-        svm_classifier = SVC(kernel='linear')
-        svm_classifier.fit(X_train_features, y_train)
-        
-        # Predict and evaluate the SVM classifier
+        # Evaluation
         y_pred = svm_classifier.predict(X_test_features)
-        accuracy = accuracy_score(y_test, y_pred)
-        classification_report_dict = classification_report(y_test, y_pred, output_dict=True)
-        classification_report_df = pd.DataFrame(classification_report_dict).transpose()
+        accuracy = accuracy_score(y_test.argmax(axis=1), y_pred)
+        report = classification_report(
+            y_test.argmax(axis=1),
+            y_pred,
+            output_dict=True
+        )
         
-        st.write(f"Input shape: {input_shape}")
-        st.write(f"Accuracy: {accuracy:.4f}")
-        st.write("Classification Report:")
-        st.table(classification_report_df)
+        # Display results
+        st.success(f"### Model Training Completed!")
+        st.write(f"### Accuracy: {accuracy:.4f}")
+        st.write("### Classification Report:")
+        st.table(pd.DataFrame(report).transpose())
+        
+        # Plot training history
+        st.write("### Training History")
+        history_df = pd.DataFrame(history.history)
+        st.line_chart(history_df)
