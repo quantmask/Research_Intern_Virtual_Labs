@@ -2,7 +2,7 @@ import os
 import scipy.io
 import pandas as pd
 import numpy as np
-from scipy.stats import kurtosis
+from scipy.stats import kurtosis, skew
 from scipy.fft import fft
 import streamlit as st
 import pywt
@@ -36,13 +36,21 @@ sampling_rate_input = st.sidebar.text_input("Sampling Rate (samples per second)"
 
 # Feature extraction parameters
 feature_options = {
-    'Mean': 'Mean',
-    'Standard Deviation': 'Standard Deviation',
-    'Kurtosis': 'Kurtosis',
-    'Peak Value': 'Peak Value',
-    'Peak-to-Peak': 'Peak-to-Peak',
-    'Impulse Factor': 'Impulse Factor'
+    'Mean': 'Calculate mean value',
+    'Standard Deviation': 'Calculate standard deviation',
+    'Variance': 'Calculate variance',
+    'Kurtosis': 'Calculate kurtosis',
+    'Skewness': 'Calculate skewness',
+    'Peak Value': 'Calculate peak value',
+    'Range': 'Calculate range',
+    'RMS': 'Calculate Root Mean Square',
+    'Impulse Factor': 'Calculate impulse factor',
+    'Crest Factor': 'Calculate crest factor',
+    'Shape Factor': 'Calculate shape factor',
+    'L1 Normal': 'Calculate L1 normal',
+    'L2 Normal': 'Calculate L2 normal'
 }
+
 # Fetch available CSV files from the dataset_csv folder
 csv_files = [file for file in os.listdir(output_folder) if file.endswith('.csv')]
 
@@ -128,7 +136,41 @@ def clean_and_save_dataframe(df, csv_name, max_rows):
     else:
         st.warning(f"DataFrame '{csv_name}' has only {df.shape[0]} rows; no rows dropped.")
 
-def extract_features_from_dataframe(dataframe):
+def calculate_features(window):
+    """Calculate features for a given window of data."""
+    features = {
+        'Mean': np.mean(window),
+        'Standard Deviation': np.std(window),
+        'Variance': np.var(window),
+        'Kurtosis': kurtosis(window, fisher=True),
+        'Skewness': skew(window),
+        'Peak Value': np.max(np.abs(window)),
+        'Range': np.max(window) - np.min(window),
+        'RMS': np.sqrt(np.mean(np.square(window))),
+        'Impulse Factor': np.max(np.abs(window)) / np.mean(np.abs(window)) if np.mean(np.abs(window)) != 0 else np.nan,
+        'Crest Factor': np.max(np.abs(window)) / np.sqrt(np.mean(np.square(window))) if np.sqrt(np.mean(np.square(window))) != 0 else np.nan,
+        'Shape Factor': np.sqrt(np.mean(np.square(window))) / np.mean(np.abs(window)) if np.mean(np.abs(window)) != 0 else np.nan,
+        'L1 Normal': np.sum(np.abs(window)),
+        'L2 Normal': np.sqrt(np.sum(np.square(window)))
+    }
+    return features
+
+def extract_features_from_dataframe(dataframe, window_size):
+    """Extract specified features from the DataFrame using a sliding window."""
+    features_list = []
+    
+    for column in dataframe.columns:
+        values = dataframe[column].values
+        
+        # Sliding window feature extraction
+        for start in range(0, len(values) - window_size + 1):
+            window = values[start:start + window_size]
+            features = calculate_features(window)
+            features_list.append({**features, **{'Column': column}})
+    
+    return pd.DataFrame(features_list)
+
+def extract_features_for_all_data_points(dataframe):
     """Extract specified features from the DataFrame."""
     features_dict = {}
     
@@ -143,6 +185,15 @@ def extract_features_from_dataframe(dataframe):
         peak_to_peak_value = peak_value - np.min(values)
         impulse_factor = peak_value / mean_value if mean_value != 0 else np.nan
 
+        # Additional metrics
+        skewness_value = skew(values)  # Skewness
+        crest_factor = peak_value / np.sqrt(np.mean(np.square(values))) if np.sqrt(np.mean(np.square(values))) != 0 else np.nan  # Crest Factor
+        shape_factor = np.sqrt(np.mean(np.square(values))) / mean_value if mean_value != 0 else np.nan  # Shape Factor
+        rms_value = np.sqrt(np.mean(np.square(values)))  # RMS
+        range_value = peak_value - np.min(values)  # Range
+        l1_normal = np.sum(np.abs(values))  # L1 Normal
+        l2_normal = np.sqrt(np.sum(np.square(values)))  # L2 Normal
+
         # Store results in the dictionary
         features_dict[column] = {
             'Mean': mean_value,
@@ -150,48 +201,108 @@ def extract_features_from_dataframe(dataframe):
             'Kurtosis': kurtosis_value,
             'Peak Value': peak_value,
             'Peak-to-Peak': peak_to_peak_value,
-            'Impulse Factor': impulse_factor
+            'Impulse Factor': impulse_factor,
+            'skewness_value': skewness_value,
+            'crest_factor': crest_factor,
+            'shape_factor':shape_factor,
+            'rms_value': rms_value,
+            'range_value': range_value,
+            'l1_normal': l1_normal,
+            'l2_normal': l2_normal
         }
-
     return features_dict
+def create_correlation_heatmap(features_data, selected_features):
+    """Create a correlation heatmap from extracted features."""
+    # Calculate correlation matrix
+    correlation_matrix = features_data[selected_features].corr()
+    
+    # Create heatmap using Plotly
+    fig = go.Figure(data=go.Heatmap(
+        z=correlation_matrix,
+        x=correlation_matrix.columns,
+        y=correlation_matrix.columns,
+        colorscale='Viridis',
+        zmin=-1,
+        zmax=1,
+        text=np.around(correlation_matrix.values, decimals=2),  # Show values on hover
+        texttemplate='%{text}',  # Format for hover text
+        textfont={"size": 10},
+        hoverongaps=False
+    ))
+    
+    fig.update_layout(
+        title='Feature Correlation Heatmap',
+        xaxis_title='Features',
+        yaxis_title='Features',
+        width=800,
+        height=800,
+        xaxis={'tickangle': 45}  # Rotate x-axis labels for better readability
+    )
+    
+    return fig
 
-# Feature selection block remains in the same region
+# Feature selection block
 st.sidebar.subheader("Feature Extraction Options")
 select_all_features = st.sidebar.checkbox("Select All Features", value=False)
-selected_features = st.sidebar.multiselect("Select Features to Extract", options=list(feature_options.keys()), disabled=select_all_features)
-if select_all_features:
-    selected_features = list(feature_options.keys())  # Automatically select all features if "Select All" is checked
-# Extract Features button functionality
+selected_features = st.sidebar.multiselect(
+    "Select Features to Extract",
+    options=list(feature_options.keys()),
+    disabled=select_all_features
+)
 
+if select_all_features:
+    selected_features = list(feature_options.keys())
+    
+window_size_input = st.sidebar.text_input("Enter window size for feature extraction and coorelation", value="1024")
+
+# Extract Features button functionality
 if st.button("Extract Features"):
     if not selected_files:
         st.warning("Please select at least one file for feature extraction.")
     elif not selected_features:
         st.warning("Please select at least one feature to extract.")
     else:
-        for selected_file in selected_files:  # Iterate over the selected files
-            # Construct the full path for the current file
+        all_features_data = []  # Store features from all files
+        
+        for selected_file in selected_files:
             data_path = os.path.join(output_folder, selected_file)
             try:
                 # Load the selected CSV file
                 data_frame = pd.read_csv(data_path)
 
-                # Extract features from the DataFrame
-                features_data = extract_features_from_dataframe(data_frame)
-
+                # Extract features from the DataFrame with a specified window size (e.g., 1000)
+                window_size = int(window_size_input)  # Adjust as needed
+                features_data = extract_features_from_dataframe(data_frame, window_size)
+                features_data_combined = extract_features_for_all_data_points(data_frame)
+                
                 # Display extracted features
                 st.subheader(f"Features extracted from {selected_file}")
-                for column, metrics in features_data.items():
-                    st.write(f"**Column: {column}**")
-                    for metric in selected_features:
-                        if metric in metrics:  # Check if the feature is selected by the user
-                            st.write(f" {metric}: {metrics[metric]}")
-                    st.write("-" * 40)
+                st.write(features_data_combined)  # Display first few rows of features
+                
+                # Store features for correlation analysis
+                all_features_data.append(features_data)
 
             except FileNotFoundError:
                 st.error(f"File not found: {data_path}. Please ensure the file exists in the dataset_csv folder.")
- 
+                continue
+        
+        # Combine all feature data into a single DataFrame for correlation analysis
+        if all_features_data:
+            combined_features_data = pd.concat(all_features_data, ignore_index=True)
+
+            # Create and display correlation heatmap if we have data
+            if len(combined_features_data) > 1:  # Only create heatmap if we have multiple columns
+                st.subheader("Feature Correlation Analysis")
                 
+                # Create and display the correlation heatmap
+                correlation_fig = create_correlation_heatmap(combined_features_data, selected_features)
+                st.plotly_chart(correlation_fig)
+                
+                # Display correlation matrix as a table
+                st.subheader("Correlation Matrix")
+                correlation_matrix = combined_features_data[selected_features].corr()
+                st.dataframe(correlation_matrix.round(2))
+                                            
 # Fast Fourier Transform section
 st.sidebar.subheader("Fast Fourier Transform Options")
 select_fft_all_csv = st.sidebar.checkbox("Select All CSV Files for FFT", value=False)
