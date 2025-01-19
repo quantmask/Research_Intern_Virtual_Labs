@@ -13,6 +13,7 @@ import tensorflow as tf
 from tensorflow.keras.losses import CategoricalCrossentropy, BinaryCrossentropy
 from tensorflow.keras import layers, models
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.metrics import classification_report, accuracy_score, roc_curve, auc, confusion_matrix
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
@@ -532,44 +533,6 @@ if st.button("Calculate Wavelet Transform"):
                     try:
                         # Perform Discrete Wavelet Transform (DWT)
                         coeffs = pywt.wavedec(values_wavelet, wavelet_name, level=None)
-                        
-                         # Generate a time axis for the data
-                        time_points = np.linspace(0, len(values_wavelet) / int(sampling_rate_input), len(values_wavelet))
-
-                        # Combine coefficients into a single 2D array for heatmap
-                        coeff_arr, coeff_slices = pywt.coeffs_to_array(coeffs)
-
-                        # Updated plot for the Wavelet Transform as a heatmap using Plotly
-                        fig = go.Figure(data=go.Heatmap(
-                            z=np.abs(coeff_arr),
-                            x=time_points,
-                            y=np.arange(coeff_arr.shape[0]),
-                            colorscale='Viridis'
-                        ))
-
-                        fig.update_layout(
-                            title=f"Wavelet Transform of {csv_file}",
-                            xaxis_title="Time (seconds)",
-                            yaxis_title="Coefficient Index",
-                            hovermode='x unified',
-                            plot_bgcolor='white',
-                            xaxis=dict(
-                                rangeslider=dict(visible=True),
-                                rangeselector=dict(
-                                    buttons=list([
-                                        dict(count=1, label="1s", step="second", stepmode="backward"),
-                                        dict(count=10, label="10s", step="second", stepmode="backward"),
-                                        dict(count=30, label="30s", step="second", stepmode="backward"),
-                                        dict(step="all", label="All")
-                                    ])
-                                )
-                            ),
-                            yaxis=dict(fixedrange=False)
-                        )
-
-                        # Show the plot within Streamlit
-                        st.plotly_chart(fig)
-
                         # Reconstruct the signal from the wavelet coefficients
                         reconstructed_signal = pywt.waverec(coeffs, wavelet_name)
 
@@ -678,6 +641,42 @@ if st.button("Calculate Wavelet Transform"):
 
             except Exception as e:
                 st.error(f"Error processing file {csv_file}: {e}")
+                
+def calculate_features(window_data):
+    """Calculate statistical features for a given window of data"""
+    # Basic statistical features
+    mean_value = np.mean(window_data)
+    std_value = np.std(window_data)
+    rms_value = np.sqrt(np.mean(np.square(window_data)))
+    
+    # Peak-based features
+    peak_value = np.max(np.abs(window_data))
+    peak_to_peak_value = np.max(window_data) - np.min(window_data)
+    range_value = peak_to_peak_value
+    
+    # Shape features
+    kurtosis_value = kurtosis(window_data)
+    skewness_value = skew(window_data)
+    
+    # Factor calculations
+    crest_factor = peak_value / rms_value if rms_value != 0 else 0
+    shape_factor = rms_value / np.mean(np.abs(window_data)) if np.mean(np.abs(window_data)) != 0 else 0
+    impulse_factor = peak_value / np.mean(np.abs(window_data)) if np.mean(np.abs(window_data)) != 0 else 0
+    
+    # Norm calculations
+    l1_normal = np.linalg.norm(window_data, ord=1)
+    l2_normal = np.linalg.norm(window_data, ord=2)
+    
+    # Combine all features
+    features = np.array([
+        mean_value, std_value, kurtosis_value, peak_value,
+        peak_to_peak_value, impulse_factor, skewness_value,
+        crest_factor, shape_factor, rms_value, range_value,
+        l1_normal, l2_normal
+    ])
+    
+    return features
+
 def create_roc_curve(y_true, y_pred_proba):
     """Create ROC curve using Plotly"""
     fpr, tpr, _ = roc_curve(y_true, y_pred_proba)
@@ -861,14 +860,21 @@ if selected_csv_files:
         data = pd.read_csv(data_path, header=None)
         data_points.extend(data.values.flatten())
     
+    # Modified window processing with feature extraction
     X = []
     y = []
     for i in range(len(data_points) - window_size):
-        X.append(data_points[i:i + window_size])
+        window = data_points[i:i + window_size]
+        features = calculate_features(window)
+        X.append(features)
         y.append(data_points[i + window_size])
     
     X = np.array(X)
     y = np.array(y)
+    
+    # Standardize features
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
     
     binarizer = Binarizer(threshold=np.median(y))
     y = binarizer.fit_transform(y.reshape(-1, 1)).flatten()
