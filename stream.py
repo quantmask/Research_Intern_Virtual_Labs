@@ -242,6 +242,36 @@ def create_correlation_heatmap(features_data, selected_features):
     
     return fig
 
+# Global variable to store top correlated features
+TOP_CORRELATED_FEATURES = []
+
+# finding top correlated features 
+def find_top_correlated_features(correlation_matrix, n=5):
+    global TOP_CORRELATED_FEATURES
+    
+    # Get upper triangle of correlation matrix
+    corr_matrix = correlation_matrix.abs().where(np.triu(np.ones(correlation_matrix.shape), k=1).astype(bool))
+    
+    # Unstack and sort
+    corr_pairs = corr_matrix.unstack()
+    sorted_corr = corr_pairs.sort_values(kind="quicksort", ascending=False)
+    
+    # Filter out perfect correlations (1.0)
+    sorted_corr = sorted_corr[sorted_corr < 1.0]
+    
+    # Get top n correlations
+    top_correlations = sorted_corr.head(n)
+    
+    # Store in global variable
+    TOP_CORRELATED_FEATURES = list(top_correlations.index)
+    
+    # Display results
+    st.subheader("Top 5 Correlated Features")
+    for pair, correlation in top_correlations.items():
+        st.write(f"{pair[0]} - {pair[1]}: {correlation:.4f}")
+    
+    return TOP_CORRELATED_FEATURES
+    
 # Feature selection block
 st.sidebar.subheader("Feature Extraction Options")
 select_all_features = st.sidebar.checkbox("Select All Features", value=False)
@@ -278,7 +308,8 @@ if st.button("Extract Features"):
                 
                 # Display extracted features
                 st.subheader(f"Features extracted from {selected_file}")
-                st.write(features_data_combined)  # Display first few rows of features
+                features_df = pd.DataFrame.from_dict(features_data_combined, orient='index')
+                st.dataframe(features_df.style.background_gradient(cmap='YlGnBu'))
                 
                 # Store features for correlation analysis
                 all_features_data.append(features_data)
@@ -302,6 +333,7 @@ if st.button("Extract Features"):
                 # Display correlation matrix as a table
                 st.subheader("Correlation Matrix")
                 correlation_matrix = combined_features_data[selected_features].corr()
+                top_features = find_top_correlated_features(correlation_matrix)
                 st.dataframe(correlation_matrix.round(2))
                                             
 # Fast Fourier Transform section
