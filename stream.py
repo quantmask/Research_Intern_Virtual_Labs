@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import matplotlib.colors as mcolors
 import tensorflow as tf
+from docx import Document
 from tensorflow.keras.losses import CategoricalCrossentropy, BinaryCrossentropy
 from tensorflow.keras import layers, models
 from sklearn.model_selection import train_test_split
@@ -19,6 +20,7 @@ from sklearn.metrics import classification_report, accuracy_score, roc_curve, au
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.preprocessing import Binarizer
 from sklearn.manifold import TSNE
+from scipy import interpolate
 
 # Define output folder for CSV files
 output_folder = "dataset_csv"
@@ -675,39 +677,24 @@ if st.button("Calculate Wavelet Transform"):
                 st.error(f"Error processing file {csv_file}: {e}")
                 
 def calculate_features(window_data):
-    """Calculate statistical features for a given window of data"""
-    # Basic statistical features
-    mean_value = np.mean(window_data)
-    std_value = np.std(window_data)
-    rms_value = np.sqrt(np.mean(np.square(window_data)))
-    
-    # Peak-based features
-    peak_value = np.max(np.abs(window_data))
-    peak_to_peak_value = np.max(window_data) - np.min(window_data)
-    range_value = peak_to_peak_value
-    
-    # Shape features
-    kurtosis_value = kurtosis(window_data)
-    skewness_value = skew(window_data)
-    
-    # Factor calculations
-    crest_factor = peak_value / rms_value if rms_value != 0 else 0
-    shape_factor = rms_value / np.mean(np.abs(window_data)) if np.mean(np.abs(window_data)) != 0 else 0
-    impulse_factor = peak_value / np.mean(np.abs(window_data)) if np.mean(np.abs(window_data)) != 0 else 0
-    
-    # Norm calculations
-    l1_normal = np.linalg.norm(window_data, ord=1)
-    l2_normal = np.linalg.norm(window_data, ord=2)
-    
-    # Combine all features
-    features = np.array([
-        mean_value, std_value, kurtosis_value, peak_value,
-        peak_to_peak_value, impulse_factor, skewness_value,
-        crest_factor, shape_factor, rms_value, range_value,
-        l1_normal, l2_normal
-    ])
-    
+    """Calculate specified statistical features"""
+    features = {
+        'mean_value': np.mean(window_data),
+        'std_value': np.std(window_data),
+        'variance_value': np.var(window_data),
+        'kurtosis_value': kurtosis(window_data),
+        'skewness_value': skew(window_data),
+        'peak_value': np.max(window_data),
+        'range_value': np.ptp(window_data),  # Peak-to-peak (max - min)
+        'rms_value': np.sqrt(np.mean(np.square(window_data))),
+        'impulse_factor': np.max(window_data) / np.sqrt(np.mean(np.square(window_data))) if np.sqrt(np.mean(np.square(window_data))) != 0 else 0,
+        'crest_factor': np.max(window_data) / np.std(window_data) if np.std(window_data) != 0 else 0,
+        'shape_factor': np.sqrt(np.mean(np.square(window_data))) / np.mean(window_data) if np.mean(window_data) != 0 else 0,
+        'l1_normal': np.linalg.norm(window_data, ord=1),
+        'l2_normal': np.linalg.norm(window_data, ord=2)
+    }
     return features
+
 
 def create_roc_curve(y_true, y_pred_proba):
     """Create ROC curve using Plotly"""
@@ -782,6 +769,31 @@ def create_tsne_plot(features, labels):
     
     fig.update_traces(marker=dict(size=8))
     return fig
+
+def save_metrics_to_doc(file_name, accuracy, report, roc_fig, conf_matrix_fig):
+    """Save performance metrics to a Word document."""
+    doc = Document()
+    
+    doc.add_heading(f'Metrics for {file_name}', level=1)
+    
+    doc.add_heading('Accuracy', level=2)
+    doc.add_paragraph(f'Accuracy: {accuracy:.4f}')
+    
+    doc.add_heading('Classification Report', level=2)
+    doc.add_paragraph(str(report))
+    
+    # Save ROC curve and confusion matrix figures as images and add to the document
+    roc_fig.write_image(f"{file_name}_roc.png")  # This line requires kaleido
+    conf_matrix_fig.write_image(f"{file_name}_confusion_matrix.png")  # This line requires kaleido
+    
+    doc.add_heading('ROC Curve', level=2)
+    doc.add_picture(f"{file_name}_roc.png")
+    
+    doc.add_heading('Confusion Matrix', level=2)
+    doc.add_picture(f"{file_name}_confusion_matrix.png")
+    
+    # Save the document
+    doc.save(f"{file_name}_metrics.docx")
 
 # Define activation-loss pairs
 ACTIVATION_LOSS_PAIRS = {
@@ -898,7 +910,7 @@ if selected_csv_files:
     for i in range(len(data_points) - window_size):
         window = data_points[i:i + window_size]
         features = calculate_features(window)
-        X.append(features)
+        X.append(np.concatenate((window, list(features.values()))))
         y.append(data_points[i + window_size])
     
     X = np.array(X)
@@ -1018,8 +1030,7 @@ if selected_csv_files:
             y_true = y_test
             
         accuracy = accuracy_score(y_true, y_pred)
-        report = classification_report(y_true, y_pred, output_dict=True)
-        
+        report = classification_report(y_true, y_pred, output_dict=True)  
         st.success(f"### Model Training Completed!")
         st.write(f"### Accuracy: {accuracy:.4f}")
         st.write("### Classification Report:")
@@ -1065,3 +1076,6 @@ if selected_csv_files:
             height=400
         )
         st.plotly_chart(fig_history)
+        # Save metrics to a Word document for each file processed
+        for file in selected_csv_files:
+            save_metrics_to_doc(file.split('.')[0], accuracy, report, roc_fig, conf_matrix_fig)
